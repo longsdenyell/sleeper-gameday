@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* App background color matches your design */
+html, body, #root {
+  height: 100%;
+}
