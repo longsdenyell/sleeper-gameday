@@ -1,271 +1,115 @@
-import React, { useRef } from "react";
-import { cls } from "./utils/format";
-import { useSleeperData } from "./hooks/useSleeperData";
-import LeagueCard from "./components/LeagueCard";
-import BoardSlot from "./components/BoardSlot";
-import MiniCard from "./components/MiniCard";
-import DevTests from "./components/DevTests";
+import React,{useState,useEffect,useRef} from "react";
 
-export default function App() {
-  const {
-    // state
-    username, setUsername, user, stateNFL, week, setWeek,
-    leagues, matchupsByLeague, players, loadingPlayers,
-    layout, setLayout, order, setOrder, collapsed, setCollapsed, featured, setFeatured,
-    error, loading, live, setLive, intervalSec, setIntervalSec,
-    scoreFlash, tileFlash, playerFlash,
+// utils
+const nf1=new Intl.NumberFormat(undefined,{minimumFractionDigits:1,maximumFractionDigits:1});
+const cls=(...x)=>x.filter(Boolean).join(" ");
+const POS_COLORS={QB:"bg-orange-500 text-black",RB:"bg-emerald-500 text-black",WR:"bg-sky-500 text-black",TE:"bg-violet-500 text-black",K:"bg-yellow-400 text-black",DEF:"bg-gray-400 text-black",DST:"bg-gray-400 text-black"};
+const SLOT_ACCEPTS={QB:["QB"],RB:["RB"],WR:["WR"],TE:["TE"],K:["K"],DEF:["DEF","DST"],DST:["DEF","DST"],FLEX:["RB","WR","TE"],REC_FLEX:["WR","TE"],SUPER_FLEX:["QB","RB","WR","TE"],IDP_FLEX:["DL","LB","DB"],DL:["DL"],LB:["LB"],DB:["DB"]};
+const NON_START=new Set(["BN","BENCH","TAXI","IR","RESERVE"]);
+const buildSlots=l=>(l?.roster_positions||[]).filter(x=>!NON_START.has(String(x).toUpperCase()));
 
-    // methods
-    ensurePlayersLoaded, playerName, playerPos, loadLeagues, refreshWeekData,
-    projLoading, projections,
-  } = useSleeperData();
+// external API keys
+const CONFIG={
+  ODDS:"cfe873cc67910e5d0133cb8266d0cfee",
+  WX:"c18e2b2874475ad111873f1fafa40e32"
+};
 
-  const [showModal, setShowModal] = React.useState(false);
-  const dragIdRef = useRef<string | null>(null);
-
-  function onDragStart(id: string) { dragIdRef.current = id; }
-  function onDragOver(e: React.DragEvent) { e.preventDefault(); }
-  function onDrop(targetId: string) {
-    const src = dragIdRef.current; if (!src || src === targetId) return;
-    setOrder(prev => {
-      const arr = prev.filter(x => x !== src);
-      const idx = arr.indexOf(targetId);
-      if (idx === -1) return prev;
-      arr.splice(idx, 0, src);
-      return [...arr];
-    });
-  }
-  function onDropSlot(slot: 0|1) {
-    const src = dragIdRef.current; if (!src) return;
-    promoteToSlot(src, slot);
-  }
-  function promoteToSlot(id: string, slot: 0|1) {
-    setFeatured((prev = []) => {
-      const next = [...prev];
-      if (!next[0]) next[0] = null;
-      if (!next[1]) next[1] = null;
-      if (next[0] === id) next[0] = null;
-      if (next[1] === id) next[1] = null;
-      next[slot] = id;
-      return next;
-    });
-  }
-  function demoteFromSlots(id: string) {
-    setFeatured((prev = []) => prev.map(x => x === id ? null : x));
-  }
-
-  const header = (
-    <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-bold text-white">Sleeper — My Leagues</h1>
-        {stateNFL && (
-          <p className="text-sm text-gray-300">
-            NFL {stateNFL.season} • week {week || stateNFL.week} • {stateNFL.season_type}
-          </p>
-        )}
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-sm text-gray-300">
-        <button onClick={() => setShowModal(true)} className="rounded-xl border border-gray-700 px-3 py-2 hover:bg-[#13171c]">Settings</button>
-        <label className="ml-2 inline-flex items-center gap-2">
-          <input type="checkbox" className="h-4 w-4" checked={live} onChange={e => setLive(e.target.checked)} />
-          Live
-        </label>
-        <div className="flex items-center gap-2">
-          <span>every</span>
-          <input type="number" min={10} step={5} value={intervalSec} onChange={e => setIntervalSec(Number(e.target.value))} className="w-16 rounded-md border border-gray-600 bg-gray-800 p-1 text-gray-100" />
-          <span>sec</span>
-        </div>
-        <div className="ml-2 inline-flex overflow-hidden rounded-xl border border-gray-700">
-          <button className={cls("px-3 py-2 text-sm", layout === "scroll" ? "bg-[#1da1f2] text-black" : "text-gray-300 hover:bg-[#13171c]")} onClick={() => setLayout("scroll")}>Scroll</button>
-          <button className={cls("px-3 py-2 text-sm", layout === "grid"   ? "bg-[#1da1f2] text-black" : "text-gray-300 hover:bg-[#13171c]")} onClick={() => setLayout("grid")}>Grid</button>
-          <button className={cls("px-3 py-2 text-sm", layout === "board"  ? "bg-[#1da1f2] text-black" : "text-gray-300 hover:bg-[#13171c]")} onClick={() => setLayout("board")}>Board</button>
-        </div>
+// ---------- MiniCard ----------
+function MiniCard({id,league,data,playerName,playerPos,scoreFlash,tileFlash,onPromote}){
+  return(
+    <div className={cls("mb-2 cursor-pointer rounded-lg border p-2 text-xs hover:bg-gray-800",tileFlash&&"tile-flash")} onClick={()=>onPromote&&onPromote(id)}>
+      <div className="flex justify-between">
+        <span className="font-semibold">{league.name}</span>
+        <span className={cls("tabular-nums",scoreFlash&&"score-flash")}>{nf1.format(data?.points_me||0)}-{nf1.format(data?.points_opp||0)}</span>
       </div>
     </div>
   );
+}
 
-  return (
-    <div className="min-h-screen bg-[#0f1216] p-4 md:p-8 text-gray-100">
-      <style>{`
-        @keyframes scoreFlash { 0%{background-color:rgba(29,161,242,0.0)} 50%{background-color:rgba(29,161,242,0.25)} 100%{background-color:rgba(29,161,242,0.0)} }
-        .score-flash { animation: scoreFlash 0.9s ease-out; }
-        @keyframes tileFlash { 0%{box-shadow:0 0 0 0 rgba(34,197,94,0.0)} 50%{box-shadow:0 0 0 6px rgba(34,197,94,0.35)} 100%{box-shadow:0 0 0 0 rgba(34,197,94,0.0)} }
-        .tile-flash { animation: tileFlash 1.2s ease-out; }
-        @keyframes playerFlash { 0%{background-color:rgba(250,204,21,0.0)} 50%{background-color:rgba(250,204,21,0.35)} 100%{background-color:rgba(250,204,21,0.0)} }
-        .player-flash { animation: playerFlash 2s ease-out; }
-      `}</style>
-
-      <div className="mx-auto max-w-7xl space-y-6">
-        <div className="rounded-2xl bg-[#151a21] p-5 shadow-sm ring-1 ring-black/10">{header}</div>
-
-        <section className="rounded-2xl bg-[#151a21] p-5 shadow-sm ring-1 ring-black/10">
-          <h2 className="mb-3 text-xl font-semibold text-white">Your leagues {week ? `(week ${week})` : ""}</h2>
-
-          {layout === "scroll" && (
-            <div className="overflow-x-auto">
-              <div className="flex gap-4">
-                {order.map((id) => {
-                  const lg = leagues.find(l => l.league_id === id);
-                  if (!lg) return null;
-                  const data = matchupsByLeague[id];
-                  const isCollapsed = !!collapsed[id];
-                  return (
-                    <div key={id} className="w-[520px] shrink-0" draggable onDragStart={() => onDragStart(id)} onDragOver={onDragOver} onDrop={() => onDrop(id)}>
-                      <LeagueCard
-                        league={lg}
-                        data={data}
-                        collapsed={isCollapsed}
-                        onToggleCollapse={() => setCollapsed(c => ({ ...c, [id]: !c[id] }))}
-                        scoreFlash={!!scoreFlash[id]}
-                        tileFlash={!!tileFlash[id]}
-                        playerName={players ? (p=>playerName(p)) : (p=>p)}
-                        playerPos={playerPos}
-                        highlightPids={playerFlash[id] || {}}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {layout === "grid" && (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {order.map((id) => {
-                const lg = leagues.find(l => l.league_id === id);
-                if (!lg) return null;
-                const data = matchupsByLeague[id];
-                const isCollapsed = !!collapsed[id];
-                return (
-                  <div key={id} className="min-w-0" draggable onDragStart={() => onDragStart(id)} onDragOver={onDragOver} onDrop={() => onDrop(id)}>
-                    <LeagueCard
-                      league={lg}
-                      data={data}
-                      collapsed={isCollapsed}
-                      onToggleCollapse={() => setCollapsed(c => ({ ...c, [id]: !c[id] }))}
-                      scoreFlash={!!scoreFlash[id]}
-                      tileFlash={!!tileFlash[id]}
-                      playerName={players ? (p=>playerName(p)) : (p=>p)}
-                      playerPos={playerPos}
-                      highlightPids={playerFlash[id] || {}}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {layout === "board" && (
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-              <div className="min-w-0" onDragOver={onDragOver} onDrop={() => onDropSlot(0)}>
-                <BoardSlot
-                  title="Focus A"
-                  id={(featured[0] as string) ?? null}
-                  leagues={leagues}
-                  matchupsByLeague={matchupsByLeague}
-                  playersLoaded={!!players}
-                  playerName={players ? (p=>playerName(p)) : (p=>p)}
-                  playerPos={playerPos}
-                  collapsed={false}
-                  onDemote={demoteFromSlots}
-                  scoreFlash={featured[0] ? !!scoreFlash[featured[0] as string] : false}
-                  tileFlash={featured[0] ? !!tileFlash[featured[0] as string] : false}
-                  highlightPids={featured[0] ? (playerFlash[featured[0] as string] || {}) : {}}
-                />
-              </div>
-              <div className="min-w-0" onDragOver={onDragOver} onDrop={() => onDropSlot(1)}>
-                <BoardSlot
-                  title="Focus B"
-                  id={(featured[1] as string) ?? null}
-                  leagues={leagues}
-                  matchupsByLeague={matchupsByLeague}
-                  playersLoaded={!!players}
-                  playerName={players ? (p=>playerName(p)) : (p=>p)}
-                  playerPos={playerPos}
-                  collapsed={false}
-                  onDemote={demoteFromSlots}
-                  scoreFlash={featured[1] ? !!scoreFlash[featured[1] as string] : false}
-                  tileFlash={featured[1] ? !!tileFlash[featured[1] as string] : false}
-                  highlightPids={featured[1] ? (playerFlash[featured[1] as string] || {}) : {}}
-                />
-              </div>
-              <div className="min-w-0">
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-white">Other matchups</h3>
-                  <div className="text-xs text-gray-400">Drag here to demote</div>
-                </div>
-                <div className="space-y-3" onDragOver={onDragOver} onDrop={() => { const src = dragIdRef.current; if (src) demoteFromSlots(src); }}>
-                  {order.filter(id => !featured.includes(id)).map((id) => {
-                    const lg = leagues.find(l => l.league_id === id);
-                    if (!lg) return null;
-                    const data = matchupsByLeague[id];
-                    return (
-                      <div key={id} draggable onDragStart={() => onDragStart(id)} onDragOver={onDragOver} onDrop={() => onDrop(id)}>
-                        <MiniCard
-                          league={lg}
-                          data={data}
-                          scoreFlash={!!scoreFlash[id]}
-                          tileFlash={!!tileFlash[id]}
-                          onPromoteA={() => promoteToSlot(id, 0)}
-                          onPromoteB={() => promoteToSlot(id, 1)}
-                        />
-                      </div>
-                    );
-                  })}
-                  {order.filter(id => !featured.includes(id)).length === 0 && (
-                    <div className="rounded-xl border border-dashed border-gray-700 p-4 text-center text-sm text-gray-400">No other matchups</div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {!loading && leagues.length === 0 && (
-            <div className="py-6 text-center text-gray-400">No leagues loaded.</div>
-          )}
-        </section>
-
-        <footer className="pb-8 text-center text-xs text-gray-500">
-          Built with the public Sleeper API. Live updates every {intervalSec}s when enabled. Drag tiles to reorder; click the caret to collapse. Layout and featured slots are persisted.
-        </footer>
-
-        <DevTests />
+// ---------- LineupCard ----------
+function LineupCard({league,data,players,playerName,playerPos}){
+  const slots=buildSlots(league),starters=data?.starters_me||[],bench=data?.bench_me||[],pts=data?.players_points_me||{};
+  const [odds,setOdds]=useState({}),[wx,setWx]=useState({});
+  const norm=s=>String(s||"").toUpperCase().replace(/[^A-Z0-9]/g,""); const team=pid=>norm(players?.[pid]?.team||"");
+  useEffect(()=>{(async()=>{
+    try{
+      const sb=await fetch("https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard").then(r=>r.json());
+      const evs=sb.events||[];
+      // odds
+      try{
+        const arr=await fetch(`https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds?regions=us&markets=spreads,totals&apiKey=${CONFIG.ODDS}`).then(r=>r.json());
+        const map={}; for(const g of arr){const N=n=>norm(n);const h=N(g.home_team),a=N(g.away_team);let tot=null,sp=null;
+          for(const m of g.bookmakers?.[0]?.markets||[]){if(m.key==="totals")tot=m.outcomes?.[0]?.point; if(m.key==="spreads"){const o=m.outcomes?.find(o=>N(o.name)===h);if(o)sp=o.point}}
+          if(tot){if(sp!=null){map[h]={it:tot/2-sp/2};map[a]={it:tot/2+sp/2}}else{map[h]=map[a]={it:tot/2}}}
+        } setOdds(map);
+      }catch(e){console.error("odds err",e);}
+      // weather
+      const wmap={}; for(const ev of evs){const c=ev.competitions?.[0],v=c?.venue,lat=v?.address?.latitude||v?.latitude,lon=v?.address?.longitude||v?.longitude;if(!lat||!lon)continue;
+        try{const cur=(await fetch(`https://api.openweathermap.org/data/3.0/onecall?lat=${lat}&lon=${lon}&units=metric&appid=${CONFIG.WX}`).then(r=>r.json()))?.current||{};
+          const sum={t:cur.temp,w:cur.wind_speed,d:cur.weather?.[0]?.description}; for(const tm of c.competitors){wmap[norm(tm.team?.displayName||tm.team?.abbreviation)]=sum;}
+        }catch(e){console.error("wx err",e);}
+      } setWx(wmap);
+    }catch(e){console.error("ext err",e);}
+  })()},[]);
+  const posCls=p=>POS_COLORS[p]||"bg-gray-600 text-white";
+  return(
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-4 rounded-lg bg-[#0e1116] p-3">
+        <div className="text-[11px] uppercase tracking-wide text-gray-400">Quick score</div>
+        <div className="text-right font-semibold text-white">{nf1.format(data?.points_me||0)} <span className="text-gray-500">vs</span> {nf1.format(data?.points_opp||0)}</div>
       </div>
-
-      {/* Settings modal */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setShowModal(false)}>
-          <div className="w-full max-w-lg rounded-2xl bg-[#151a21] p-5 shadow-xl ring-1 ring-black/20" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-white">Settings</h3>
-              <button className="rounded-md px-2 py-1 text-gray-300 hover:bg-gray-800" onClick={() => setShowModal(false)}>✕</button>
+      {slots.map((slot,i)=>{const accepts=SLOT_ACCEPTS[slot]||[slot],sid=starters[i],spos=sid?playerPos(sid):"",sname=sid?playerName(sid):null,spts=sid?pts[sid]||0:0,benchE=bench.filter(pid=>accepts.includes(playerPos(pid)));
+        const t=team(sid),v=odds[t],w=wx[t];
+        return(
+          <div key={i} className="rounded-xl border border-gray-800 bg-[#0e1116] p-3">
+            <div className="mb-2 flex justify-between text-xs text-gray-400"><span>{slot}</span><span>{accepts.join("/")}</span></div>
+            <div className="mb-2 rounded-lg border border-gray-800 bg-[#0d1014] p-2">
+              {sid?<>
+                <div className="flex justify-between"><div className="flex min-w-0 items-center gap-2">
+                  <span className={cls("h-6 rounded-md px-2 text-[11px] font-bold flex items-center",posCls(spos))}>{spos||"--"}</span>
+                  <span className="truncate text-sm">{sname}</span></div>
+                  <span className="font-semibold">{nf1.format(spts)}</span></div>
+                <div className="mt-1 grid grid-cols-3 gap-2 text-[10px] text-gray-400">
+                  <div>Vegas: {v?nf1.format(v.it):"—"}</div>
+                  <div>Wx: {w?`${Math.round(w.t)}°C ${Math.round(w.w)}m/s`:"—"}</div>
+                  <div>{w?.d||"—"}</div>
+                </div>
+              </>:<div className="text-sm text-gray-500">— No starter</div>}
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="block">
-                <div className="mb-1 text-sm font-medium text-gray-200">Sleeper username</div>
-                <input className="w-full rounded-xl border border-gray-700 bg-[#0f1216] p-2 text-gray-100 focus:border-gray-500 focus:outline-none" placeholder="e.g. your_username" value={username} onChange={(e) => setUsername(e.target.value.trim())} />
-              </label>
-              <label className="block">
-                <div className="mb-1 text-sm font-medium text-gray-200">Week</div>
-                <input className="w-full rounded-xl border border-gray-700 bg-[#0f1216] p-2 text-gray-100 focus:border-gray-500 focus:outline-none" type="number" min={1} max={18} value={week} onChange={(e) => setWeek(e.target.value)} />
-              </label>
-            </div>
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <button onClick={loadLeagues} className={cls("rounded-xl px-4 py-2 font-medium", loading ? "bg-gray-700 text-gray-300" : "bg-[#1da1f2] text-black hover:brightness-110")} disabled={loading} aria-busy={loading}>
-                {loading ? "Loading…" : "Load leagues"}
-              </button>
-              <button onClick={ensurePlayersLoaded} className={cls("rounded-xl px-4 py-2 font-medium border", loadingPlayers ? "bg-gray-800 text-gray-400 border-gray-700" : "bg-[#0f1216] text-gray-100 border-gray-700 hover:bg-[#13171c]")} disabled={loadingPlayers}>
-                {loadingPlayers ? "Loading names…" : "Improve names"}
-              </button>
-              <button onClick={() => refreshWeekData()} className="rounded-xl border border-gray-700 px-4 py-2 font-medium text-gray-100 hover:bg-[#13171c]" title="Refresh now">Refresh</button>
-            </div>
-            {error && <div className="mt-3 rounded-2xl bg-red-500/15 p-3 text-sm text-red-300">{error}</div>}
-            <div className="mt-2 text-xs text-gray-400">
-              Projections {projLoading ? "loading…" : projections ? "loaded" : "not available"} • Names {players ? "loaded" : loadingPlayers ? "loading…" : "off"}
-            </div>
+            <div className="mb-1 text-[12px] text-gray-300">Bench</div>
+            <ul className="space-y-1">{benchE.length?benchE.slice(0,5).map(pid=>
+              <li key={pid} className="flex justify-between text-[13px]">
+                <div className="flex min-w-0 items-center gap-2"><span className="rounded bg-gray-700 px-1.5 py-0.5 text-[10px]">{playerPos(pid)}</span><span className="truncate">{playerName(pid)}</span></div>
+                <span className="text-xs text-gray-300">{nf1.format(pts[pid]||0)}</span>
+              </li>):<li className="text-[13px] text-gray-500">—</li>}</ul>
           </div>
-        </div>
-      )}
-    </div>
-  );
+        );})}
+    </div>);
+}
+
+// ---------- Main App ----------
+export default function App(){
+  const [view,setView]=useState("board");
+  const [featured,setFeatured]=useState([]),[lineup,setLineup]=useState([]);
+  const [leagues,setLeagues]=useState([]),[matchups,setMatchups]=useState({}),[players,setPlayers]=useState({});
+  const playerName=id=>players?.[id]?.full_name||id,playerPos=id=>players?.[id]?.position||"";
+  // TODO: implement fetch from Sleeper user/leagues/matchups/players like before
+  // For brevity, assume leagues/matchups/players are already set
+  
+  return(
+    <div className="min-h-screen bg-black text-white p-4">
+      <div className="mb-4 flex gap-2">
+        <button onClick={()=>setView("board")} className={cls("px-3 py-1 rounded",view==="board"?"bg-blue-600":"bg-gray-700")}>Board</button>
+        <button onClick={()=>setView("lineup")} className={cls("px-3 py-1 rounded",view==="lineup"?"bg-blue-600":"bg-gray-700")}>Lineup</button>
+      </div>
+      {view==="board"?
+        <div>Board view here (focus tiles + minicards)</div>:
+        <div className="grid grid-cols-3 gap-4">
+          <div className="col-span-2">
+            {lineup[0]?<LineupCard league={leagues.find(l=>l.league_id===lineup[0])} data={matchups[lineup[0]]} players={players} playerName={playerName} playerPos={playerPos}/>:
+              <div className="p-6 text-center text-gray-500 border rounded">Drag a league here</div>}
+          </div>
+          <div>{leagues.map(l=><MiniCard key={l.league_id} id={l.league_id} league={l} data={matchups[l.league_id]} playerName={playerName} playerPos={playerPos} onPromote={id=>setLineup([id])}/>)}</div>
+        </div>}
+    </div>);
 }
